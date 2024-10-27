@@ -1,0 +1,17 @@
+.dub
+docs.json
+__dummy.html
+docs/
+/unit-vibed-hello-world
+unit-vibed-hello-world.so
+unit-vibed-hello-world.dylib
+unit-vibed-hello-world.dll
+unit-vibed-hello-world.a
+unit-vibed-hello-world.lib
+unit-vibed-hello-world-test-*
+*.exe
+*.pdb
+*.o
+*.obj
+*.lst
+dub.selections.json

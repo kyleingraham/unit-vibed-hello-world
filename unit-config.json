@@ -1,0 +1,13 @@
+{
+    "listeners": {
+        "*:8081": {
+            "pass": "applications/unit-vibed-hello-world"
+        }
+    },
+    "applications": {
+        "unit-vibed-hello-world": {
+            "type": "external",
+            "executable": "<dub output directory>/unit-vibed-hello-world"
+        }
+    }
+}
