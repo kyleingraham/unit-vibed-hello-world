@@ -122,7 +122,7 @@ void dispatch(RequestInfoMessage message)
             ushort statusCode = 200;
             auto response = "Hello, World!\n";
             auto contentType = ["Content-Type", "text/plain"];
-            sleep(10.msecs); // Test that vibe.d's concurrency system works.
+            //sleep(10.msecs); // Test that vibe.d's concurrency system works.
             auto rc = nxt_unit_response_init(
                 requestInfo,
                 statusCode,
