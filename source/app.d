@@ -1,6 +1,5 @@
 import core.atomic : atomicOp;
 import core.sync.mutex : Mutex;
-import core.time : msecs;
 import core.thread : Thread;
 import lock_free.rwqueue : RWQueue;
 import std.concurrency : ownerTid, receive, receiveOnly, spawn, thisTid;
@@ -114,6 +113,7 @@ struct RequestInfoMessage
 
 void dispatch(RequestInfoMessage message)
 {
+    import core.time : msecs;
     import vibe.core.core : sleep;
 
     runTask((nxt_unit_request_info_t* requestInfo) {
@@ -122,7 +122,7 @@ void dispatch(RequestInfoMessage message)
             ushort statusCode = 200;
             auto response = "Hello, World!\n";
             auto contentType = ["Content-Type", "text/plain"];
-            //sleep(10.msecs); // Test that vibe.d's concurrency system works.
+            sleep(10.msecs); // Test that vibe.d's concurrency system works.
             auto rc = nxt_unit_response_init(
                 requestInfo,
                 statusCode,
