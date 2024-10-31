@@ -4,7 +4,11 @@
 	],
 	"copyright": "Copyright © 2024, Kyle Ingraham",
 	"dependencies": {
-		"vibe-d": "~>0.10.1"
+		"vibe-d": "~>0.10.1",
+		"lock-free": {
+			"repository": "git+https://github.com/MartinNowak/lock-free.git",
+			"version": "4d31e3866f2e6494a743df6c06dbe47f88fd0c53",
+		},
 	},
 	"description": "A minimal NGINX Unit/vibe.d demo.",
 	"license": "MIT",
