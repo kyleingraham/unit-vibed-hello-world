@@ -1,4 +1,3 @@
-import core.atomic : atomicOp;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import lock_free.rwqueue : RWQueue;
@@ -12,11 +11,15 @@ import vibe.core.sync : createSharedManualEvent, ManualEvent;
 import vibe.core.task : Task;
 
 shared Task dispatchTask;
-shared(RWQueue!(RequestInfoMessage, 1024)) requestQueue; // Increase length of queue?
+shared(RWQueue!(RequestInfoMessage, 1024)) requestQueue;
 shared(ManualEvent) requestEvent;
 shared(Mutex) requestMutex;
-shared int queueFullWaits;
-shared int eventsEmitted;
+
+debug(Performance)
+{
+    shared int queueFullWaits;
+    shared int eventsEmitted;
+}
 
 shared static this()
 {
@@ -54,8 +57,11 @@ int main(string[] args)
         send(ownerTid, rc);
     });
 
-    int eventsWaited;
-    int requestsPopped;
+    debug(Performance)
+    {
+        int eventsWaited;
+        int requestsPopped;
+    }
 
     // Run our request handler as a task in the main thread.
     dispatchTask = runTask(() nothrow {
@@ -68,13 +74,22 @@ int main(string[] args)
             try
             {
                 requestEvent.wait();
-                eventsWaited += 1;
+
+                debug(Performance)
+                {
+                    eventsWaited += 1;
+                }
+
                 while (!requestQueue.empty)
                 {
                     requestMutex.lock();
                     scope(exit) requestMutex.unlock();
                     auto poppedMessage = requestQueue.pop();
-                    requestsPopped += 1;
+
+                    debug(Performance)
+                    {
+                        requestsPopped += 1;
+                    }
 
                     if (poppedMessage.requestInfo is null)
                     {
@@ -95,14 +110,19 @@ int main(string[] args)
         exitEventLoop;
     });
     runApplication();
-    logUnit(
-        null,
-        UnitLogLevel.info,
-        format(
-            "queueFullWaits=%s eventsEmitted=%s eventsWaited=%s requestsPopped=%s",
-            queueFullWaits, eventsEmitted, eventsWaited, requestsPopped
-        )
-    );
+
+    debug(Performance)
+    {
+        logUnit(
+            null,
+            UnitLogLevel.debug_,
+            format(
+                "queueFullWaits=%s eventsEmitted=%s eventsWaited=%s requestsPopped=%s",
+                queueFullWaits, eventsEmitted, eventsWaited, requestsPopped
+            )
+        );
+    }
+
     return receiveOnly!int;
 }
 
@@ -113,8 +133,11 @@ struct RequestInfoMessage
 
 void dispatch(RequestInfoMessage message)
 {
-    import core.time : msecs;
-    import vibe.core.core : sleep;
+    debug(Concurrency)
+    {
+        import core.time : msecs;
+        import vibe.core.core : sleep;
+    }
 
     runTask((nxt_unit_request_info_t* requestInfo) {
         try
@@ -122,7 +145,12 @@ void dispatch(RequestInfoMessage message)
             ushort statusCode = 200;
             auto response = "Hello, World!\n";
             auto contentType = ["Content-Type", "text/plain"];
-            //sleep(10.msecs); // Test that vibe.d's concurrency system works.
+
+            debug(Concurrency)
+            {
+                sleep(10.msecs); // Test that vibe.d's concurrency system works.
+            }
+
             auto rc = nxt_unit_response_init(
                 requestInfo,
                 statusCode,
@@ -173,14 +201,22 @@ void unitRequestHandler(nxt_unit_request_info_t* requestInfo)
 {
     // Here we will be in the Unit thread and will need to send a
     // message back to the main thread.
+    debug(Performance)
+    {
+        import core.atomic : atomicOp;
+    }
+
 
     auto sharedRequestInfo = cast(shared)requestInfo;
     auto message = RequestInfoMessage(sharedRequestInfo);
 
     while (requestQueue.full)
     {
-        queueFullWaits.atomicOp!"+="(1);
         Thread.yield();
+        debug(Performance)
+        {
+            queueFullWaits.atomicOp!"+="(1);
+        }
     }
 
     requestQueue.push(message);
@@ -188,8 +224,11 @@ void unitRequestHandler(nxt_unit_request_info_t* requestInfo)
     if (requestMutex.tryLock())
     {
         scope(exit) requestMutex.unlock();
-        eventsEmitted.atomicOp!"+="(1);
         requestEvent.emit();
+        debug(Performance)
+        {
+            eventsEmitted.atomicOp!"+="(1);
+        }
     }
 }
 
@@ -203,7 +242,7 @@ void logUnit(
     nxt_unit_ctx_t* unitContext,
     UnitLogLevel logLevel,
     string message
-) nothrow
+) @trusted nothrow
 {
     try
         nxt_unit_log(
