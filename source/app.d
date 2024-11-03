@@ -1,12 +1,31 @@
+import core.sync.mutex : Mutex;
+import core.thread : Thread;
+import lock_free.rwqueue : RWQueue;
 import std.concurrency : ownerTid, receive, receiveOnly, spawn, thisTid;
 import std.format : format;
 import std.string : toStringz;
 import unit_integration;
 import vibe.core.concurrency : send;
 import vibe.core.core : exitEventLoop, runApplication, runTask;
+import vibe.core.sync : createSharedManualEvent, ManualEvent;
 import vibe.core.task : Task;
 
 shared Task dispatchTask;
+shared(RWQueue!(RequestInfoMessage, 1024)) requestQueue;
+shared(ManualEvent) requestEvent;
+shared(Mutex) requestMutex;
+
+debug(Performance)
+{
+    shared int queueFullWaits;
+    shared int eventsEmitted;
+}
+
+shared static this()
+{
+    requestEvent = createSharedManualEvent();
+    requestMutex = new shared Mutex();
+}
 
 int main(string[] args)
 {
@@ -33,37 +52,54 @@ int main(string[] args)
         nxt_unit_done(unitContext);
 
         fail:
-        send(dispatchTask, CancelMessage());
+        requestQueue.push(RequestInfoMessage(null));
+        requestEvent.emit();
         send(ownerTid, rc);
     });
+
+    debug(Performance)
+    {
+        int eventsWaited;
+        int requestsPopped;
+    }
 
     // Run our request handler as a task in the main thread.
     dispatchTask = runTask(() nothrow {
         bool shouldRun = true;
-
+        uint spinCount;
         logUnit(null, UnitLogLevel.debug_, "Dispatch task started");
 
         while (shouldRun)
         {
-            void requestInfoHandler(RequestInfoMessage message)
-            {
-                logUnit(
-                    null,
-                    UnitLogLevel.debug_,
-                    "Recieved and dispatching RequestInfoMessage"
-                );
-                dispatch(message);
-            }
-
-            void cancelHandler(CancelMessage message)
-            {
-                shouldRun = false;
-            }
-
-            //logUnit(null, UnitLogLevel.debug_, "Waiting for messages");
-
             try
-                receive(&requestInfoHandler, &cancelHandler);
+            {
+                requestEvent.wait();
+
+                debug(Performance)
+                {
+                    eventsWaited += 1;
+                }
+
+                while (!requestQueue.empty)
+                {
+                    requestMutex.lock();
+                    scope(exit) requestMutex.unlock();
+                    auto poppedMessage = requestQueue.pop();
+
+                    debug(Performance)
+                    {
+                        requestsPopped += 1;
+                    }
+
+                    if (poppedMessage.requestInfo is null)
+                    {
+                        shouldRun = false;
+                        break;
+                    }
+
+                    dispatch(poppedMessage);
+                }
+            }
             catch (Exception e)
             {
                 logUnit(null, UnitLogLevel.alert, e.msg);
@@ -73,9 +109,21 @@ int main(string[] args)
 
         exitEventLoop;
     });
+    runApplication();
 
-  runApplication();
-  return receiveOnly!int;
+    debug(Performance)
+    {
+        logUnit(
+            null,
+            UnitLogLevel.debug_,
+            format(
+                "queueFullWaits=%s eventsEmitted=%s eventsWaited=%s requestsPopped=%s",
+                queueFullWaits, eventsEmitted, eventsWaited, requestsPopped
+            )
+        );
+    }
+
+    return receiveOnly!int;
 }
 
 struct RequestInfoMessage
@@ -83,20 +131,25 @@ struct RequestInfoMessage
     shared nxt_unit_request_info_t* requestInfo;
 }
 
-struct CancelMessage{}
-
 void dispatch(RequestInfoMessage message)
 {
-    //logUnit(null, UnitLogLevel.debug_, "Handling RequestInfoMessage");
+    debug(Concurrency)
+    {
+        import core.time : msecs;
+        import vibe.core.core : sleep;
+    }
 
     runTask((nxt_unit_request_info_t* requestInfo) {
-        //logUnit(null, UnitLogLevel.debug_, "Sending response");
-
         try
         {
             ushort statusCode = 200;
             auto response = "Hello, World!\n";
             auto contentType = ["Content-Type", "text/plain"];
+
+            debug(Concurrency)
+            {
+                sleep(10.msecs); // Test that vibe.d's concurrency system works.
+            }
 
             auto rc = nxt_unit_response_init(
                 requestInfo,
@@ -140,8 +193,6 @@ void dispatch(RequestInfoMessage message)
         {
             logUnit(null, UnitLogLevel.alert, e.msg);
         }
-
-        //logUnit(null, UnitLogLevel.debug_, "Sent response");
     }, cast(nxt_unit_request_info_t*)message.requestInfo);
 }
 
@@ -150,9 +201,35 @@ void unitRequestHandler(nxt_unit_request_info_t* requestInfo)
 {
     // Here we will be in the Unit thread and will need to send a
     // message back to the main thread.
+    debug(Performance)
+    {
+        import core.atomic : atomicOp;
+    }
 
-    //logUnit(null, UnitLogLevel.debug_, "Sending RequestInfoMessage");
-    send(dispatchTask, RequestInfoMessage(cast(shared)requestInfo));
+
+    auto sharedRequestInfo = cast(shared)requestInfo;
+    auto message = RequestInfoMessage(sharedRequestInfo);
+
+    while (requestQueue.full)
+    {
+        Thread.yield();
+        debug(Performance)
+        {
+            queueFullWaits.atomicOp!"+="(1);
+        }
+    }
+
+    requestQueue.push(message);
+
+    if (requestMutex.tryLock())
+    {
+        scope(exit) requestMutex.unlock();
+        requestEvent.emit();
+        debug(Performance)
+        {
+            eventsEmitted.atomicOp!"+="(1);
+        }
+    }
 }
 
 extern(C)
@@ -165,7 +242,7 @@ void logUnit(
     nxt_unit_ctx_t* unitContext,
     UnitLogLevel logLevel,
     string message
-) nothrow
+) @trusted nothrow
 {
     try
         nxt_unit_log(
