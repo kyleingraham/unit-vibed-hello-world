@@ -66,7 +66,6 @@ int main(string[] args)
     // Run our request handler as a task in the main thread.
     dispatchTask = runTask(() nothrow {
         bool shouldRun = true;
-        uint spinCount;
         logUnit(null, UnitLogLevel.debug_, "Dispatch task started");
 
         while (shouldRun)
