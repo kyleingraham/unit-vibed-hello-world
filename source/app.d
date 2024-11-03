@@ -1,31 +1,12 @@
-import core.sync.mutex : Mutex;
-import core.thread : Thread;
-import lock_free.rwqueue : RWQueue;
 import std.concurrency : ownerTid, receive, receiveOnly, spawn, thisTid;
 import std.format : format;
 import std.string : toStringz;
 import unit_integration;
 import vibe.core.concurrency : send;
 import vibe.core.core : exitEventLoop, runApplication, runTask;
-import vibe.core.sync : createSharedManualEvent, ManualEvent;
 import vibe.core.task : Task;
 
 shared Task dispatchTask;
-shared(RWQueue!(RequestInfoMessage, 1024)) requestQueue;
-shared(ManualEvent) requestEvent;
-shared(Mutex) requestMutex;
-
-debug(Performance)
-{
-    shared int queueFullWaits;
-    shared int eventsEmitted;
-}
-
-shared static this()
-{
-    requestEvent = createSharedManualEvent();
-    requestMutex = new shared Mutex();
-}
 
 int main(string[] args)
 {
@@ -52,16 +33,9 @@ int main(string[] args)
         nxt_unit_done(unitContext);
 
         fail:
-        requestQueue.push(RequestInfoMessage(null));
-        requestEvent.emit();
+        send(dispatchTask, CancelMessage());
         send(ownerTid, rc);
     });
-
-    debug(Performance)
-    {
-        int eventsWaited;
-        int requestsPopped;
-    }
 
     // Run our request handler as a task in the main thread.
     dispatchTask = runTask(() nothrow {
@@ -72,32 +46,17 @@ int main(string[] args)
         {
             try
             {
-                requestEvent.wait();
-
-                debug(Performance)
+                void requestInfoHandler(RequestInfoMessage message)
                 {
-                    eventsWaited += 1;
+                    dispatch(message);
                 }
 
-                while (!requestQueue.empty)
+                void cancelHandler(CancelMessage message)
                 {
-                    requestMutex.lock();
-                    scope(exit) requestMutex.unlock();
-                    auto poppedMessage = requestQueue.pop();
-
-                    debug(Performance)
-                    {
-                        requestsPopped += 1;
-                    }
-
-                    if (poppedMessage.requestInfo is null)
-                    {
-                        shouldRun = false;
-                        break;
-                    }
-
-                    dispatch(poppedMessage);
+                    shouldRun = false;
                 }
+
+                receive(&requestInfoHandler, &cancelHandler);
             }
             catch (Exception e)
             {
@@ -106,21 +65,10 @@ int main(string[] args)
             }
         }
 
-        exitEventLoop;
+        exitEventLoop();
     });
-    runApplication();
 
-    debug(Performance)
-    {
-        logUnit(
-            null,
-            UnitLogLevel.debug_,
-            format(
-                "queueFullWaits=%s eventsEmitted=%s eventsWaited=%s requestsPopped=%s",
-                queueFullWaits, eventsEmitted, eventsWaited, requestsPopped
-            )
-        );
-    }
+    runApplication();
 
     return receiveOnly!int;
 }
@@ -129,6 +77,8 @@ struct RequestInfoMessage
 {
     shared nxt_unit_request_info_t* requestInfo;
 }
+
+struct CancelMessage{}
 
 void dispatch(RequestInfoMessage message)
 {
@@ -200,35 +150,11 @@ void unitRequestHandler(nxt_unit_request_info_t* requestInfo)
 {
     // Here we will be in the Unit thread and will need to send a
     // message back to the main thread.
-    debug(Performance)
-    {
-        import core.atomic : atomicOp;
-    }
-
 
     auto sharedRequestInfo = cast(shared)requestInfo;
     auto message = RequestInfoMessage(sharedRequestInfo);
 
-    while (requestQueue.full)
-    {
-        Thread.yield();
-        debug(Performance)
-        {
-            queueFullWaits.atomicOp!"+="(1);
-        }
-    }
-
-    requestQueue.push(message);
-
-    if (requestMutex.tryLock())
-    {
-        scope(exit) requestMutex.unlock();
-        requestEvent.emit();
-        debug(Performance)
-        {
-            eventsEmitted.atomicOp!"+="(1);
-        }
-    }
+    send(dispatchTask, message);
 }
 
 extern(C)
